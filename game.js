@@ -164,11 +164,16 @@ const G = {
   chatViews: [],    // подключённые чат-панели
   statsRecorded: false, // статистика текущей смены записана
   lastScore: 0,     // мои баллы в текущей смене
+  settings: { sound: true, shiftMs: 420000, diff: 1 },
+  urgentNotified: new Set(), // задания, по которым уже била тревога
+  voted: false,     // клиент уже голосовал за реванш
+  voteAgain: new Set(), // голоса за реванш (у хоста)
 };
 
 /* ================= Звук ================= */
 let audioCtx = null;
 function beep(freq, dur, vol) {
+  if (G.settings && !G.settings.sound) return;
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const o = audioCtx.createOscillator();
@@ -204,6 +209,8 @@ function toMenu(message) {
   G.state = null; G.taskSig = ''; G.seenTasks = new Set(); G.coffee = {};
   G.chat = [];
   G.statsRecorded = false; G.lastScore = 0;
+  G.urgentNotified.clear(); G.voted = false;
+  document.body.classList.remove('alarm');
   G.ruleShown = false;
   showScreen('menu');
   setStatus(message || '');
@@ -220,6 +227,7 @@ function hostNewState() {
   return {
     phase: 'lobby',
     startedAt: 0,
+    shiftMs: SHIFT_REAL_MS,
     elapsed: 0,
     gameMin: 0,
     strikes: 0,
@@ -261,6 +269,7 @@ function publicState() {
   return {
     phase: st.phase,
     elapsed: st.elapsed,
+    shiftMs: st.shiftMs,
     strikes: st.strikes,
     rules: st.rules,
     tasks: st.tasks.filter((t) => !t.done).map(sanitizeTask),
@@ -373,17 +382,18 @@ function hostTick() {
   if (!st || st.phase !== 'playing') return;
   const el = Date.now() - st.startedAt;
   st.elapsed = el;
-  st.gameMin = Math.min(SHIFT_GAME_MIN, (el / SHIFT_REAL_MS) * SHIFT_GAME_MIN);
+  st.gameMin = Math.min(SHIFT_GAME_MIN, (el / (st.shiftMs || SHIFT_REAL_MS)) * SHIFT_GAME_MIN);
 
-  // в мультиплеере (2+ игроков) заказов и заявок вдвое больше
+  // в мультиплеере (2+ игроков) заказов и заявок вдвое больше; темп — из настроек
   const busy = st.players.length > 1;
+  const diff = (G.settings && G.settings.diff) || 1;
   if (el >= st.nextCall) {
     hostSpawnCall(el);
-    st.nextCall = el + (busy ? rnd(CALL_GAP[0] / 2, CALL_GAP[1] / 2) : rnd(CALL_GAP[0], CALL_GAP[1])) * 1000;
+    st.nextCall = el + Math.round(rnd(CALL_GAP[0], CALL_GAP[1]) * diff / (busy ? 2 : 1)) * 1000;
   }
   if (el >= st.nextEvent) {
     hostSpawnEvent(el);
-    st.nextEvent = el + (busy ? rnd(EVENT_GAP[0] / 2, EVENT_GAP[1] / 2) : rnd(EVENT_GAP[0], EVENT_GAP[1])) * 1000;
+    st.nextEvent = el + Math.round(rnd(EVENT_GAP[0], EVENT_GAP[1]) * diff / (busy ? 2 : 1)) * 1000;
   }
 
   for (const t of st.tasks) {
@@ -413,6 +423,7 @@ function hostStart() {
   const st = G.state;
   st.phase = 'playing';
   st.startedAt = Date.now();
+  st.shiftMs = (G.settings && G.settings.shiftMs) || SHIFT_REAL_MS;
   st.elapsed = 0;
   st.gameMin = 0;
   st.strikes = 0;
@@ -424,6 +435,7 @@ function hostStart() {
   st.nextEvent = rnd(14, 24) * 1000;
   st.players.forEach((p) => { p.score = 0; });
   st.rules = makeRules();
+  G.voteAgain = new Set();
   addLog(st, 'Приказ смены получен — читайте его!', '');
   addLog(st, 'Смена началась. До 08:00.', '');
   broadcast();
@@ -435,6 +447,7 @@ function hostAgain() {
   st.result = null;
   st.tasks = [];
   st.log = [];
+  G.voteAgain = new Set();
   broadcast();
 }
 
@@ -488,6 +501,7 @@ function netOnMessage(topic, msg) {
     if (topic === topicState(G.code) && msg && typeof msg === 'object') {
       if (G.joinTimer) { clearTimeout(G.joinTimer); G.joinTimer = null; }
       G.state = msg;
+      try { localStorage.setItem('smen-last-code', G.code); } catch (e) {}
       applyState(msg);
     }
   }
@@ -510,6 +524,7 @@ function hostCreate() {
   setStatus('Создаём лобби…');
 
   netConnect(G.code, true, () => {
+    try { localStorage.setItem('smen-last-code', G.code); } catch (e) {}
     showScreen('lobby');
     renderLobby();
     broadcast();
@@ -531,6 +546,13 @@ function hostHandle(msg) {
     hostClaim(msg.taskId, msg.id);
   } else if (msg.t === 'act') {
     hostAct(msg.taskId, msg.id, msg.data || {});
+  } else if (msg.t === 'vote-again') {
+    if (G.voteAgain) {
+      G.voteAgain.add(msg.id);
+      const others = st.players.filter((p) => p.id !== 'host');
+      const all = others.length > 0 && others.every((p) => G.voteAgain.has(p.id));
+      if (all) hostAgain();
+    }
   }
 }
 
@@ -572,6 +594,9 @@ function applyState(s) {
   if (!s) return;
   if (s.phase === 'lobby') {
     G.ruleShown = false;
+    G.urgentNotified.clear();
+    G.voted = false;
+    document.body.classList.remove('alarm');
     showScreen('lobby');
     renderLobby();
   } else if (s.phase === 'playing') {
@@ -579,6 +604,7 @@ function applyState(s) {
     renderGame(s);
     if (!G.ruleShown && s.rules) { G.ruleShown = true; openRulebook(); }
   } else if (s.phase === 'ended') {
+    document.body.classList.remove('alarm');
     showScreen('end');
     renderEnd(s);
     recordStats(s);
@@ -603,13 +629,13 @@ function renderLobby() {
 }
 
 /* ================= Отрисовка: игра ================= */
-function gameMinutes(elapsed) {
-  return Math.min(SHIFT_GAME_MIN, (elapsed / SHIFT_REAL_MS) * SHIFT_GAME_MIN);
+function gameMinutes(elapsed, shiftMs) {
+  return Math.min(SHIFT_GAME_MIN, (elapsed / (shiftMs || SHIFT_REAL_MS)) * SHIFT_GAME_MIN);
 }
 
 function renderGame(st) {
   // шапка
-  $('#hud-time').textContent = fmtTime(gameMinutes(st.elapsed));
+  $('#hud-time').textContent = fmtTime(gameMinutes(st.elapsed, st.shiftMs));
   const dots = [];
   for (let i = 0; i < MAX_STRIKES; i++) dots.push(i < st.strikes ? '●' : '○');
   $('#hud-strikes').textContent = dots.join(' ');
@@ -762,6 +788,7 @@ function buildTaskAction(body, t) {
 }
 
 function updateTimers(st) {
+  let alarm = false;
   document.querySelectorAll('.task').forEach((card) => {
     const id = Number(card.dataset.taskId);
     const t = st.tasks.find((x) => x.id === id);
@@ -771,8 +798,16 @@ function updateTimers(st) {
     const pct = Math.max(0, Math.min(100, (remaining / t.ttl) * 100));
     fill.style.width = pct + '%';
     fill.className = pct < 25 ? 'crit' : (pct < 55 ? 'warn' : '');
-    card.classList.toggle('urgent', remaining > 0 && remaining < 8000);
+    const urgent = remaining > 0 && remaining < 8000;
+    card.classList.toggle('urgent', urgent);
+    if (urgent) alarm = true;
+    if (urgent && !G.urgentNotified.has(id)) {
+      G.urgentNotified.add(id);
+      beep(940, 0.12);
+      if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+    }
   });
+  document.body.classList.toggle('alarm', alarm);
 }
 
 /* ================= Отрисовка: итоги ================= */
@@ -794,6 +829,12 @@ function renderEnd(st) {
   const isAuthority = G.mode === 'host' || G.mode === 'solo';
   $('#btn-again').classList.toggle('hidden', !isAuthority);
   $('#end-wait').classList.toggle('hidden', isAuthority);
+  const voteBtn = $('#btn-vote');
+  if (voteBtn) {
+    voteBtn.classList.toggle('hidden', isAuthority);
+    voteBtn.disabled = G.voted;
+    voteBtn.textContent = G.voted ? 'Голос отдан' : 'Просить реванш';
+  }
 }
 
 /* ================= Отрисовка: приказ смены ================= */
@@ -832,10 +873,10 @@ setInterval(() => {
   const st = G.state;
   if (!st || st.phase !== 'playing') return;
   if (G.mode !== 'host' && G.mode !== 'solo') {
-    st.elapsed = Math.min(st.elapsed + TICK_MS, SHIFT_REAL_MS);
+    st.elapsed = Math.min(st.elapsed + TICK_MS, st.shiftMs || SHIFT_REAL_MS);
   }
   if ($('#screen-game').classList.contains('hidden')) return;
-  $('#hud-time').textContent = fmtTime(gameMinutes(st.elapsed));
+  $('#hud-time').textContent = fmtTime(gameMinutes(st.elapsed, st.shiftMs));
   updateTimers(st);
 }, TICK_MS);
 
@@ -923,6 +964,41 @@ function mountChat(sel) {
   G.chatViews.push(list);
 }
 
+/* ================= Настройки (localStorage) ================= */
+const SETTINGS_KEY = 'smen-settings-v1';
+const SHIFT_CHOICES = [300000, 420000, 600000];
+const DIFF_CHOICES = [0.7, 1, 1.5];
+
+function loadSettings() {
+  const def = { sound: true, shiftMs: 420000, diff: 1 };
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    return {
+      sound: s.sound !== false,
+      shiftMs: SHIFT_CHOICES.includes(s.shiftMs) ? s.shiftMs : def.shiftMs,
+      diff: DIFF_CHOICES.includes(s.diff) ? s.diff : def.diff,
+    };
+  } catch (e) { return def; }
+}
+
+function bindSeg(id, key, numeric) {
+  const wrap = $(id);
+  if (!wrap) return;
+  const mark = () => {
+    Array.from(wrap.children).forEach((b) => {
+      b.classList.toggle('on', String(G.settings[key]) === b.dataset.v);
+    });
+  };
+  Array.from(wrap.children).forEach((b) => {
+    b.addEventListener('click', () => {
+      G.settings[key] = numeric ? Number(b.dataset.v) : (b.dataset.v === 'true');
+      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(G.settings)); } catch (e) {}
+      mark();
+    });
+  });
+  mark();
+}
+
 /* ================= Профиль (только на устройстве, без БД) ================= */
 const PROFILE_KEY = 'smen-profile-v1';
 
@@ -1007,6 +1083,12 @@ function init() {
   $('#code-input').addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
   });
+  try { $('#code-input').value = localStorage.getItem('smen-last-code') || ''; } catch (e) {}
+
+  G.settings = loadSettings();
+  bindSeg('#seg-sound', 'sound', false);
+  bindSeg('#seg-shift', 'shiftMs', true);
+  bindSeg('#seg-diff', 'diff', true);
 
   $('#btn-solo').addEventListener('click', () => {
     G.mode = 'solo';
@@ -1044,6 +1126,14 @@ function init() {
   $('#btn-again').addEventListener('click', () => {
     if (G.mode === 'host') hostAgain();
     else if (G.mode === 'solo') { G.state = hostNewState(); G.state.nextId = 1; hostAddPlayer('host', playerName()); hostStart(); }
+  });
+  $('#btn-vote').addEventListener('click', () => {
+    if (G.mode !== 'client' || G.voted) return;
+    G.voted = true;
+    clientSend({ t: 'vote-again', id: G.myId });
+    const b = $('#btn-vote');
+    b.disabled = true;
+    b.textContent = 'Голос отдан';
   });
   $('#btn-end-menu').addEventListener('click', () => toMenu(''));
 

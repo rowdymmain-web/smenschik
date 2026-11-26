@@ -27,6 +27,25 @@
         <button id="btn-join" class="btn alt">Войти</button>
       </div>
     </div>
+    <div class="panel settings-panel">
+      <p class="lbl">Настройки смены</p>
+      <div class="seg" id="seg-sound">
+        <button type="button" data-v="true">Звук: вкл</button>
+        <button type="button" data-v="false">Звук: выкл</button>
+      </div>
+      <p class="lbl">Длина смены</p>
+      <div class="seg" id="seg-shift">
+        <button type="button" data-v="300000">5 мин</button>
+        <button type="button" data-v="420000">7 мин</button>
+        <button type="button" data-v="600000">10 мин</button>
+      </div>
+      <p class="lbl">Темп заданий</p>
+      <div class="seg" id="seg-diff">
+        <button type="button" data-v="1.5">Тихий час</button>
+        <button type="button" data-v="1">Норма</button>
+        <button type="button" data-v="0.7">Аврал</button>
+      </div>
+    </div>
     <p id="menu-status" class="status"></p>
     <p class="hint">Звонки, кофе, пробки и стук в дверь — с 00:00 до 08:00.
     Три жалобы — увольнение. Всё, что нужно помнить, — в «Приказе смены»,
@@ -73,6 +92,7 @@
       <ul id="end-scores" class="players"></ul>
       <p id="end-stats" class="profile-line"></p>
       <button id="btn-again" class="btn big hidden">Сыграть ещё</button>
+      <button id="btn-vote" class="btn alt hidden">Просить реванш</button>
       <p id="end-wait" class="status hidden">Ждём, когда хозяин смены начнёт новую…</p>
       <button id="btn-end-menu" class="btn ghost">В меню</button>
     </div>
