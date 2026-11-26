@@ -18,9 +18,9 @@ HTML/CSS/JS, без сборки и без своего сервера.
 
 ## Технологии
 - Мультиплеер: MQTT через публичные брокеры по WebSocket —
-  mqtt.eclipseprojects.io:443 (основной, стандартный порт 443),
-  broker.emqx.io:8084, broker.hivemq.com:8884 и test.mosquitto.org:8081
-  (запасные; клиент перебирает их по очереди). Библиотека
+  broker.emqx.io:8084 (основной), mqtt.eclipseprojects.io:443,
+  broker.hivemq.com:8884 и test.mosquitto.org:8081 (запасные;
+  клиент перебирает их по очереди). Библиотека
   `vendor/mqtt.min.js` (MQTT.js 5.16.1), без PeerJS и без своего сервера.
   Код лобби — уникальные топики `smenschik-v2/<код>/…`; состояние хоста
   публикуется как retained-сообщение, у клиентов — Last Will для выхода.

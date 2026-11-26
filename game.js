@@ -19,8 +19,8 @@ const fmtTime = (min) => {
 
 /* ================= Константы ================= */
 const MQTT_BROKERS = [
-  'wss://mqtt.eclipseprojects.io:443/mqtt', // стандартный порт 443 — проходит почти через любые сети
-  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.emqx.io:8084/mqtt', // основной: брокер EMQX, работает в РФ без VPN
+  'wss://mqtt.eclipseprojects.io:443/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
   'wss://test.mosquitto.org:8081/mqtt',
 ];
