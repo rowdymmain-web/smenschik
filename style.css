@@ -16,6 +16,7 @@
 
 html, body { height: 100%; }
 body {
+  overflow-x: hidden;
   background:
     radial-gradient(1200px 500px at 50% -10%, #16203a 0%, transparent 60%),
     var(--bg);
@@ -71,7 +72,7 @@ input:focus { border-color: var(--amber-dim); }
 .join-row .btn { width: auto; margin-top: 0; padding: 12px 20px; }
 
 .status { color: var(--amber); min-height: 22px; margin-top: 12px; text-align: center; font-size: 14px; }
-.hint { color: var(--muted); font-size: 14px; margin-top: 16px; text-align: center; }
+.hint { color: var(--muted); font-size: 14px; margin-top: 16px; padding: 0 6px; text-align: center; overflow-wrap: break-word; }
 
 /* ---------- лобби ---------- */
 .code {
