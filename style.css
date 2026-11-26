@@ -173,6 +173,8 @@ input:focus { border-color: var(--amber-dim); }
 .chat-btn { width: auto; margin: 0; padding: 8px 14px; }
 .chat-wrap .lbl { margin-top: 16px; }
 
+.profile-line { text-align: center; color: var(--muted); font-size: 13px; margin-top: 12px; }
+
 @media (max-width: 420px) {
   h1 { font-size: 34px; }
   .hud-cell.wide { min-width: 100%; }

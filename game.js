@@ -162,6 +162,8 @@ const G = {
   chat: [],         // расшифрованные сообщения чата
   chatKeys: {},     // кэш ключей чата по коду лобби
   chatViews: [],    // подключённые чат-панели
+  statsRecorded: false, // статистика текущей смены записана
+  lastScore: 0,     // мои баллы в текущей смене
 };
 
 /* ================= Звук ================= */
@@ -201,6 +203,7 @@ function toMenu(message) {
   G.mode = null; G.mqtt = null; G.myId = 'host'; G.code = '';
   G.state = null; G.taskSig = ''; G.seenTasks = new Set(); G.coffee = {};
   G.chat = [];
+  G.statsRecorded = false; G.lastScore = 0;
   G.ruleShown = false;
   showScreen('menu');
   setStatus(message || '');
@@ -547,7 +550,7 @@ function hostGone(msg) {
 function clientJoin(code) {
   G.mode = 'client';
   G.code = code;
-  G.myId = 'p-' + Math.random().toString(36).slice(2, 10);
+  G.myId = 'p-' + fnv1a(G.profile.token + ':' + code) + fnv1a(code + ':' + G.profile.token);
   setStatus('Подключаемся…');
   netConnect(code, false, () => {
     showScreen('lobby');
@@ -578,6 +581,7 @@ function applyState(s) {
   } else if (s.phase === 'ended') {
     showScreen('end');
     renderEnd(s);
+    recordStats(s);
   }
 }
 
@@ -611,6 +615,8 @@ function renderGame(st) {
   $('#hud-strikes').textContent = dots.join(' ');
   $('#hud-strikes').style.color = st.strikes >= MAX_STRIKES - 1 ? 'var(--bad)' : 'var(--text)';
   $('#hud-players').textContent = st.players.map((p) => p.name + ': ' + p.score).join(' · ');
+  const me = st.players.find((p) => p.id === myId());
+  if (me) G.lastScore = me.score;
 
   // журнал
   const logEl = $('#log');
@@ -917,6 +923,73 @@ function mountChat(sel) {
   G.chatViews.push(list);
 }
 
+/* ================= Профиль (только на устройстве, без БД) ================= */
+const PROFILE_KEY = 'smen-profile-v1';
+
+function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+function loadProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (p && p.token && p.id && p.stats) return p;
+    }
+  } catch (e) {}
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  const p = {
+    id: 'u-' + fnv1a(token + ':' + Date.now()),
+    token,               // никогда не покидает устройство
+    name: 'Сменщик',
+    created: new Date().toISOString(),
+    stats: { games: 0, wins: 0, best: 0 },
+  };
+  saveProfile(p);
+  return p;
+}
+
+function saveProfile(p) {
+  const prof = p || G.profile;
+  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(prof)); } catch (e) {}
+}
+
+function renderProfileLine() {
+  const s = G.profile.stats;
+  $('#profile-line').textContent = 'Профиль на устройстве: ' + G.profile.name +
+    ' · смен: ' + s.games + ' · побед: ' + s.wins + ' · рекорд: ' + s.best;
+}
+
+function renderEndStats() {
+  const target = $('#end-stats');
+  if (!target) return;
+  const s = G.profile.stats;
+  target.textContent = 'Всего смен: ' + s.games + ' · побед: ' + s.wins + ' · личный рекорд: ' + s.best;
+}
+
+function recordStats(s) {
+  if (G.statsRecorded || !G.profile) return;
+  G.statsRecorded = true;
+  const r = s.result || { win: false };
+  let score = G.lastScore;
+  const mine = (s.players || []).find((p) => p.id === myId());
+  if (mine) score = mine.score;
+  const st = G.profile.stats;
+  st.games++;
+  if (r.win) st.wins++;
+  if (score > st.best) st.best = score;
+  saveProfile();
+  renderProfileLine();
+  renderEndStats();
+}
+
 /* ================= Инициализация ================= */
 function playerName() {
   const v = $('#name-input').value.trim();
@@ -924,10 +997,12 @@ function playerName() {
 }
 
 function init() {
-  try { $('#name-input').value = localStorage.getItem('smen-name') || ''; } catch (e) {}
-
+  G.profile = loadProfile();
+  $('#name-input').value = G.profile.name;
   $('#name-input').addEventListener('change', () => {
-    try { localStorage.setItem('smen-name', $('#name-input').value.trim()); } catch (e) {}
+    G.profile.name = ($('#name-input').value.trim() || 'Сменщик').slice(0, 14);
+    saveProfile();
+    renderProfileLine();
   });
   $('#code-input').addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -982,6 +1057,7 @@ function init() {
 
   mountChat('#chat-lobby');
   mountChat('#chat-game');
+  renderProfileLine();
 }
 
 init();
