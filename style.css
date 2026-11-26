@@ -163,6 +163,16 @@ input:focus { border-color: var(--amber-dim); }
 .modal-card li { margin-bottom: 8px; font-size: 15px; }
 .modal-card b { color: var(--amber); }
 
+/* ---------- чат ---------- */
+.chat { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 4px; }
+.chat-list { max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.chat-msg { word-break: break-word; }
+.chat-msg b { color: var(--amber); margin-right: 4px; }
+.chat-row { display: flex; gap: 8px; margin-top: 8px; }
+.chat-input { margin: 0; padding: 8px 10px; font-size: 14px; }
+.chat-btn { width: auto; margin: 0; padding: 8px 14px; }
+.chat-wrap .lbl { margin-top: 16px; }
+
 @media (max-width: 420px) {
   h1 { font-size: 34px; }
   .hud-cell.wide { min-width: 100%; }

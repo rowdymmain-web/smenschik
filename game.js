@@ -23,6 +23,7 @@ const TOPIC_BASE = 'smenschik-v2/';
 const topicState = (c) => TOPIC_BASE + c + '/state';
 const topicToHost = (c) => TOPIC_BASE + c + '/tohost';
 const topicGone = (c) => TOPIC_BASE + c + '/gone';
+const topicChat = (c) => TOPIC_BASE + c + '/chat';
 const SHIFT_REAL_MS = 7 * 60 * 1000;      // реальная длительность смены
 const SHIFT_GAME_MIN = 480;               // 00:00 -> 08:00
 const TASK_TTL = { call: 35000, fuse: 25000, coffee: 30000, knock: 20000 };
@@ -153,6 +154,9 @@ const G = {
   seenTasks: new Set(),
   joinTimer: null,
   pingTimer: null,
+  chat: [],         // расшифрованные сообщения чата
+  chatKeys: {},     // кэш ключей чата по коду лобби
+  chatViews: [],    // подключённые чат-панели
 };
 
 /* ================= Звук ================= */
@@ -191,6 +195,7 @@ function toMenu(message) {
   }
   G.mode = null; G.mqtt = null; G.myId = 'host'; G.code = '';
   G.state = null; G.taskSig = ''; G.seenTasks = new Set(); G.coffee = {};
+  G.chat = [];
   G.ruleShown = false;
   showScreen('menu');
   setStatus(message || '');
@@ -362,8 +367,16 @@ function hostTick() {
   st.elapsed = el;
   st.gameMin = Math.min(SHIFT_GAME_MIN, (el / SHIFT_REAL_MS) * SHIFT_GAME_MIN);
 
-  if (el >= st.nextCall) { hostSpawnCall(el); st.nextCall = el + rnd(CALL_GAP[0], CALL_GAP[1]) * 1000; }
-  if (el >= st.nextEvent) { hostSpawnEvent(el); st.nextEvent = el + rnd(EVENT_GAP[0], EVENT_GAP[1]) * 1000; }
+  // в мультиплеере (2+ игроков) заказов и заявок вдвое больше
+  const busy = st.players.length > 1;
+  if (el >= st.nextCall) {
+    hostSpawnCall(el);
+    st.nextCall = el + (busy ? rnd(CALL_GAP[0] / 2, CALL_GAP[1] / 2) : rnd(CALL_GAP[0], CALL_GAP[1])) * 1000;
+  }
+  if (el >= st.nextEvent) {
+    hostSpawnEvent(el);
+    st.nextEvent = el + (busy ? rnd(EVENT_GAP[0] / 2, EVENT_GAP[1] / 2) : rnd(EVENT_GAP[0], EVENT_GAP[1])) * 1000;
+  }
 
   for (const t of st.tasks) {
     if (!t.done && el > t.expiresAt) resolveMiss(st, t);
@@ -437,7 +450,7 @@ function netConnect(code, isHost, onReady) {
 
     client.on('connect', () => {
       if (G.mqtt !== client) return;
-      const subs = isHost ? [topicToHost(code), topicGone(code)] : [topicState(code)];
+      const subs = isHost ? [topicToHost(code), topicGone(code), topicChat(code)] : [topicState(code), topicChat(code)];
       client.subscribe(subs, (err) => {
         if (err || G.mqtt !== client) return;
         if (!isHost) {
@@ -459,6 +472,7 @@ function netConnect(code, isHost, onReady) {
 }
 
 function netOnMessage(topic, msg) {
+  if (topic === topicChat(G.code)) { chatOnMessage(msg); return; }
   if (G.mode === 'host') {
     if (topic === topicToHost(G.code)) hostHandle(msg);
     else if (topic === topicGone(G.code)) hostGone(msg);
@@ -814,6 +828,90 @@ setInterval(() => {
   updateTimers(st);
 }, TICK_MS);
 
+/* ================= Чат (AES-GCM, ключ из кода лобби) ================= */
+const CHAT_SALT = 'smenschik-chat-v1';
+const b64enc = (u8) => btoa(String.fromCharCode.apply(null, u8));
+const b64dec = (s) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0));
+
+async function chatKey(code) {
+  if (!G.chatKeys[code]) {
+    const enc = new TextEncoder();
+    const base = await crypto.subtle.importKey('raw', enc.encode(code + ':' + CHAT_SALT), 'PBKDF2', false, ['deriveKey']);
+    G.chatKeys[code] = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: enc.encode(CHAT_SALT), iterations: 50000, hash: 'SHA-256' },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  }
+  return G.chatKeys[code];
+}
+
+async function chatSend(raw) {
+  const text = String(raw).slice(0, 120).trim();
+  if (!text || !G.mqtt || !G.mqtt.connected || !G.code) return;
+  try {
+    const key = await chatKey(G.code);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const plain = JSON.stringify({
+      n: playerName(),
+      x: text,
+      m: Math.round((G.state && G.state.gameMin) || 0),
+    });
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plain));
+    netPublish(topicChat(G.code), { t: 'chat', iv: b64enc(iv), ct: b64enc(new Uint8Array(ct)) });
+  } catch (e) { /* без шифрования не отправляем */ }
+}
+
+async function chatOnMessage(msg) {
+  if (!msg || msg.t !== 'chat' || typeof msg.iv !== 'string' || typeof msg.ct !== 'string' || !G.code) return;
+  try {
+    const key = await chatKey(G.code);
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(msg.iv) }, key, b64dec(msg.ct));
+    const data = JSON.parse(new TextDecoder().decode(plain));
+    if (typeof data.x !== 'string' || !data.x.trim()) return;
+    G.chat.push({
+      name: String(data.n || '???').slice(0, 14),
+      text: String(data.x).slice(0, 120),
+      min: typeof data.m === 'number' ? data.m : null,
+    });
+    if (G.chat.length > 40) G.chat.shift();
+    renderChat();
+    beep(980, 0.08, 0.03);
+  } catch (e) { /* чужой ключ или битое сообщение — молча */ }
+}
+
+function renderChat() {
+  G.chatViews.forEach((list) => {
+    list.innerHTML = '';
+    G.chat.forEach((m) => {
+      const row = el('div', 'chat-msg', null);
+      const who = el('b', null, m.name);
+      row.appendChild(who);
+      row.appendChild(document.createTextNode((m.min !== null ? ' [' + fmtTime(m.min) + ']' : '') + ' ' + m.text));
+      list.appendChild(row);
+    });
+    list.scrollTop = list.scrollHeight;
+  });
+}
+
+function mountChat(sel) {
+  const c = $(sel);
+  if (!c) return;
+  const list = el('div', 'chat-list');
+  const row = el('div', 'chat-row');
+  const input = el('input', 'chat-input');
+  input.maxLength = 120;
+  input.placeholder = 'Сообщение…';
+  const btn = el('button', 'btn small chat-btn', '→');
+  const send = () => {
+    if (input.value.trim()) chatSend(input.value);
+    input.value = '';
+  };
+  btn.addEventListener('click', send);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  row.appendChild(input); row.appendChild(btn);
+  c.appendChild(list); c.appendChild(row);
+  G.chatViews.push(list);
+}
+
 /* ================= Инициализация ================= */
 function playerName() {
   const v = $('#name-input').value.trim();
@@ -876,6 +974,9 @@ function init() {
   });
 
   setInterval(hostTick, TICK_MS);
+
+  mountChat('#chat-lobby');
+  mountChat('#chat-game');
 }
 
 init();
