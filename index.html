@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Сменщик — ночная смена</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ МЕНЮ ============ -->
+  <section id="screen-menu" class="screen">
+    <div class="title-wrap">
+      <h1>СМЕНЩИК</h1>
+      <p class="subtitle">Ночная смена в конторе «Глооми-Корп»</p>
+    </div>
+    <div class="panel">
+      <label class="lbl" for="name-input">Ваше имя</label>
+      <input id="name-input" maxlength="14" placeholder="Смотрящий">
+      <button id="btn-solo" class="btn big">Одиночная смена</button>
+      <div class="divider"><span>мультиплеер</span></div>
+      <button id="btn-create" class="btn big alt">Создать лобби</button>
+      <div class="join-row">
+        <input id="code-input" maxlength="5" placeholder="КОД" autocomplete="off" spellcheck="false">
+        <button id="btn-join" class="btn alt">Войти</button>
+      </div>
+    </div>
+    <p id="menu-status" class="status"></p>
+    <p class="hint">Звонки, кофе, пробки и стук в дверь — с 00:00 до 08:00.
+    Три жалобы — увольнение. Всё, что нужно помнить, — в «Приказе смены»,
+    и приказ каждый раз новый.</p>
+  </section>
+
+  <!-- ============ ЛОББИ ============ -->
+  <section id="screen-lobby" class="screen hidden">
+    <div class="panel">
+      <p class="lbl">Код лобби</p>
+      <div id="lobby-code" class="code">-----</div>
+      <p class="hint">Передайте код друзьям — они введут его в меню.</p>
+      <p class="lbl">На смене:</p>
+      <ul id="lobby-players" class="players"></ul>
+      <button id="btn-start" class="btn big hidden">Начать смену</button>
+      <p id="lobby-wait" class="status hidden">Ждём, когда хозяин смены начнёт игру…</p>
+      <button id="btn-lobby-leave" class="btn ghost">Выйти</button>
+    </div>
+  </section>
+
+  <!-- ============ ИГРА ============ -->
+  <section id="screen-game" class="screen hidden">
+    <header class="hud">
+      <div class="hud-cell"><span class="hud-lbl">Время</span><span id="hud-time">00:00</span></div>
+      <div class="hud-cell"><span class="hud-lbl">Жалобы</span><span id="hud-strikes"></span></div>
+      <div class="hud-cell wide"><span class="hud-lbl">Баллы</span><span id="hud-players"></span></div>
+      <button id="btn-rulebook" class="btn small">Приказ</button>
+    </header>
+    <main id="tasks" class="tasks"></main>
+    <ul id="log" class="log"></ul>
+    <button id="btn-leave" class="btn small ghost">Уйти со смены</button>
+  </section>
+
+  <!-- ============ ИТОГИ ============ -->
+  <section id="screen-end" class="screen hidden">
+    <div class="panel">
+      <h2 id="end-title">—</h2>
+      <ul id="end-scores" class="players"></ul>
+      <button id="btn-again" class="btn big hidden">Сыграть ещё</button>
+      <p id="end-wait" class="status hidden">Ждём, когда хозяин смены начнёт новую…</p>
+      <button id="btn-end-menu" class="btn ghost">В меню</button>
+    </div>
+  </section>
+
+  <!-- ============ ПРИКАЗ СМЕНЫ ============ -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <h2 id="rulebook-title">Приказ смены</h2>
+      <ol id="rulebook-list"></ol>
+      <p class="hint">Приказ свой на каждую смену — не путайте со вчерашним!</p>
+      <button id="btn-close-modal" class="btn">Закрыть</button>
+    </div>
+  </div>
+
+</div>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
