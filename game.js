@@ -18,7 +18,12 @@ const fmtTime = (min) => {
 };
 
 /* ================= Константы ================= */
-const MQTT_BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://test.mosquitto.org:8081/mqtt'];
+const MQTT_BROKERS = [
+  'wss://mqtt.eclipseprojects.io:443/mqtt', // стандартный порт 443 — проходит почти через любые сети
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt',
+];
 const TOPIC_BASE = 'smenschik-v2/';
 const topicState = (c) => TOPIC_BASE + c + '/state';
 const topicToHost = (c) => TOPIC_BASE + c + '/tohost';
@@ -441,7 +446,7 @@ function netConnect(code, isHost, onReady) {
     const client = mqtt.connect(url, {
       clientId: 'smen-' + Math.random().toString(36).slice(2, 10),
       clean: true,
-      connectTimeout: 8000,
+      connectTimeout: 6000,
       reconnectPeriod: 3000,
       will,
     });
