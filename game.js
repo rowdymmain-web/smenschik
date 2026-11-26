@@ -31,13 +31,13 @@ const topicGone = (c) => TOPIC_BASE + c + '/gone';
 const topicChat = (c) => TOPIC_BASE + c + '/chat';
 const SHIFT_REAL_MS = 7 * 60 * 1000;      // реальная длительность смены
 const SHIFT_GAME_MIN = 480;               // 00:00 -> 08:00
-const TASK_TTL = { call: 35000, fuse: 25000, coffee: 30000, knock: 20000 };
-const POINTS = { call: 100, fuse: 50, coffee: 75, knock: 40 };
+const TASK_TTL = { call: 35000, fuse: 25000, coffee: 30000, knock: 20000, fax: 30000, camera: 30000, inventory: 20000, boss: 25000 };
+const POINTS = { call: 100, fuse: 50, coffee: 75, knock: 40, fax: 80, camera: 80, inventory: 60, boss: 200 };
 const MAX_STRIKES = 3;
 const TICK_MS = 250;
 const CALL_GAP = [14, 28];   // сек между звонками
 const EVENT_GAP = [24, 40];  // сек между событиями
-const KIND_LABEL = { call: 'Звонок', fuse: 'Пробки', coffee: 'Кофе', knock: 'Дверь' };
+const KIND_LABEL = { call: 'Звонок', fuse: 'Пробки', coffee: 'Кофе', knock: 'Дверь', fax: 'Факс', camera: 'Камера', inventory: 'Склад', boss: 'Проверка' };
 
 /* ================= Звонящие ================= */
 const CALLERS = [
@@ -107,6 +107,7 @@ const FUSE_LABELS = ['А', 'Б', 'В', 'Г', 'Д', 'Е'];
 
 /* ================= Приказ смены (генерируется на каждую смену) ================= */
 const WORDS = ['Багульник', 'Акация', 'Флюгер', 'Валерьянка'];
+const NY_WORDS = ['Мандарин', 'Хвоинка', 'Сугроб', 'Гирлянда'];
 const CONTRACTS = ['№К-77', '№М-12', '№З-34'];
 
 function shuffle(arr) {
@@ -128,13 +129,17 @@ function plural(n, one, few, many) {
 function makeRules() {
   const fuse = pick(FUSE_LABELS);
   const wrongFuse = pick(FUSE_LABELS.filter((f) => f !== fuse));
+  const ny = !!(G.settings && G.settings.nyTheme);
   return {
-    word: pick(WORDS),
+    word: ny ? pick(NY_WORDS) : pick(WORDS),
     contract: pick(CONTRACTS),
     pct: pick([10, 15, 20]),
     fuse, wrongFuse,
     coffee: { sugar: rnd(1, 3), milk: rnd(0, 2) },
     curfew: pick([120, 180, 240]), // минуты: 02:00 / 03:00 / 04:00
+    faxShift: rnd(1, 5),
+    badSeries: pick(['А3', 'А7', 'Б2', 'В5']),
+    ny,
   };
 }
 
@@ -229,6 +234,7 @@ function hostNewState() {
     startedAt: 0,
     shiftMs: SHIFT_REAL_MS,
     elapsed: 0,
+    bossDone: false,
     gameMin: 0,
     strikes: 0,
     tasks: [],
@@ -259,8 +265,9 @@ function sanitizeTask(t) {
     id: t.id, kind: t.kind, title: t.title, desc: t.desc,
     expiresAt: t.expiresAt, ttl: t.ttl, claimedBy: t.claimedBy || null,
   };
-  if (t.kind === 'call') s.options = t.options.map((o) => ({ t: o.t }));
+  if (t.options) s.options = t.options.map((o) => ({ t: o.t }));
   if (t.kind === 'fuse') s.labels = FUSE_LABELS;
+  if (t.kind === 'boss') s.need = t.need;
   return s;
 }
 
@@ -305,18 +312,42 @@ function hostSpawnCall(el) {
 function hostSpawnEvent(el) {
   const st = G.state;
   const rules = st.rules;
-  const kind = pick(['fuse', 'coffee', 'knock']);
+  const ny = rules.ny;
+  const kind = pick(['fuse', 'coffee', 'knock', 'fax', 'camera', 'inventory']);
   let task;
   if (kind === 'fuse') {
     task = { id: st.nextId++, kind: 'fuse', title: 'Выбило пробки', desc: 'Свет мигает. Рубильник — по приказу смены.', answer: rules.fuse, labels: shuffle(FUSE_LABELS) };
   } else if (kind === 'coffee') {
     task = { id: st.nextId++, kind: 'coffee', title: 'Шеф требует кофе', desc: 'Рецепт — в приказе смены.', need: { sugar: rules.coffee.sugar, milk: rules.coffee.milk } };
+  } else if (kind === 'fax') {
+    const words = ['АВАНС', 'СКИДКА', 'КОД', 'ЯЩИК'];
+    const w = pick(words);
+    const enc = Array.from(w, (ch) => String.fromCharCode(((ch.charCodeAt(0) - 1040 + rules.faxShift) % 32) + 1040)).join('');
+    const others = shuffle(words.filter((x) => x !== w));
+    const opts = shuffle([{ t: w, ok: true }, { t: others[0], ok: false }, { t: others[1], ok: false }, { t: others[2], ok: false }]);
+    task = { id: st.nextId++, kind: 'fax', title: 'Факс с шифровкой', desc: 'Факс: «ШИФР: ' + enc + '» — сдвиг букв на ' + rules.faxShift + '.', options: opts };
+  } else if (kind === 'camera') {
+    const people = shuffle([['Смирнов', 'А3'], ['Орлов', 'А7'], ['Волкова', 'Б2'], ['Гусев', 'В5']]);
+    const bad = people.find((p) => p[1] === rules.badSeries);
+    const opts = shuffle(people.map((p) => ({ t: p[0] + ' (' + p[1] + ')', ok: p === bad })));
+    task = { id: st.nextId++, kind: 'camera', title: 'Камера наблюдения', desc: 'Пропуска серии «' + rules.badSeries + '» недействительны. Кто нарушитель?', options: opts };
+  } else if (kind === 'inventory') {
+    const x = rnd(4, 9), y = rnd(6, 12);
+    const right = x * y;
+    const opts = shuffle([
+      { t: String(right), ok: true },
+      { t: String(right + rnd(1, 3)), ok: false },
+      { t: String(Math.max(1, right - rnd(1, 3))), ok: false },
+      { t: String(x + y), ok: false },
+    ]);
+    task = { id: st.nextId++, kind: 'inventory', title: 'Инвентарь склада', desc: 'На складе ' + x + ' ящиков по ' + y + ' коробок. Сколько всего?', options: opts };
   } else {
     const saysCode = Math.random() < 0.5;
     const afterCurfew = st.gameMin >= rules.curfew;
+    const pre = ny ? 'В дверь стучат в валенках: ' : 'Голос за дверью: ';
     task = {
-      id: st.nextId++, kind: 'knock', title: 'Стук в дверь',
-      desc: saysCode ? 'Голос за дверью: «Открывайте, это я! ' + rules.word + '!»' : 'Голос за дверью: «Открывайте, пора обсудить дела!»',
+      id: st.nextId++, kind: 'knock', title: ny ? 'Стук в дверь (валенки!)' : 'Стук в дверь',
+      desc: saysCode ? pre + '«Открывайте, это я! ' + rules.word + '!»' : pre + '«Открывайте, пора обсудить дела!»',
       shouldOpen: !afterCurfew && saysCode,
     };
   }
@@ -351,18 +382,20 @@ function hostAct(taskId, pid, data) {
   t.done = true;
 
   let ok = false;
-  if (t.kind === 'call') ok = !!(t.options[data.choice] && t.options[data.choice].ok);
-  else if (t.kind === 'fuse') ok = data.fuse === t.answer;
-  else if (t.kind === 'coffee') ok = data.sugar === t.need.sugar && data.milk === t.need.milk;
-  else if (t.kind === 'knock') ok = data.open === t.shouldOpen;
+  if (t.kind === 'call' || t.kind === 'fax' || t.kind === 'camera' || t.kind === 'inventory') {
+    ok = !!(t.options[data.choice] && t.options[data.choice].ok);
+  } else if (t.kind === 'fuse') ok = data.fuse === t.answer;
+  else if (t.kind === 'coffee' || t.kind === 'boss') {
+    ok = data.sugar === t.need.sugar && data.milk === t.need.milk;
+  } else if (t.kind === 'knock') ok = data.open === t.shouldOpen;
 
   if (ok) {
     addScore(st, pid, POINTS[t.kind]);
     addLog(st, KIND_LABEL[t.kind] + ': справились — +' + POINTS[t.kind], 'good');
     beep(880, 0.15);
   } else {
-    st.strikes++;
-    addLog(st, KIND_LABEL[t.kind] + ': ошибка — жалоба!', 'bad');
+    st.strikes += (t.kind === 'boss' ? 2 : 1);
+    addLog(st, KIND_LABEL[t.kind] + (t.kind === 'boss' ? ' провалена — ДВЕ жалобы!' : ': ошибка — жалоба!'), 'bad');
     beep(220, 0.3);
   }
   broadcast();
@@ -403,9 +436,29 @@ function hostTick() {
   if (hadMiss) st.tasks = st.tasks.filter((t) => !t.done);
   else st.tasks = st.tasks.filter((t) => !t.done);
 
+  if (st.gameMin >= 180 && !st.bossDone) {
+    st.bossDone = true;
+    hostSpawnBoss(el);
+  }
   if (st.gameMin >= SHIFT_GAME_MIN) { hostEnd(true); return; }
   if (st.strikes >= MAX_STRIKES) { hostEnd(false); return; }
   broadcast();
+}
+
+function hostSpawnBoss(el) {
+  const st = G.state;
+  const rules = st.rules;
+  const ny = rules.ny;
+  st.tasks.push({
+    id: st.nextId++, kind: 'boss',
+    title: ny ? 'Дед Мороз проводит проверку!' : 'Проверка шефа в 03:00!',
+    desc: (ny ? 'Дед Мороз на посту: кофе строго по приказу, мандарины не предлагать!' : 'Шеф лично на посту: кофе строго по приказу!') + ' Ошибка — сразу две жалобы.',
+    need: { sugar: rules.coffee.sugar, milk: rules.coffee.milk },
+    claimedBy: null, done: false,
+    expiresAt: el + TASK_TTL.boss, ttl: TASK_TTL.boss,
+  });
+  addLog(st, ny ? 'Дед Мороз на посту!' : 'Проверка шефа в 03:00!', 'bad');
+  beep(180, 0.4);
 }
 
 function hostEnd(win) {
@@ -424,6 +477,7 @@ function hostStart() {
   st.phase = 'playing';
   st.startedAt = Date.now();
   st.shiftMs = (G.settings && G.settings.shiftMs) || SHIFT_REAL_MS;
+  st.bossDone = false;
   st.elapsed = 0;
   st.gameMin = 0;
   st.strikes = 0;
@@ -620,7 +674,7 @@ function renderLobby() {
   const players = st ? st.players : [];
   players.forEach((p) => {
     const li = el('li', null, null);
-    li.appendChild(el('span', null, p.name));
+    li.appendChild(el('span', null, p.name + (p.id === 'host' ? ' — старший смены' : ' — стажёр')));
     list.appendChild(li);
   });
   const isHost = G.mode === 'host';
@@ -731,7 +785,7 @@ function renderTasks(st) {
 }
 
 function buildTaskAction(body, t) {
-  if (t.kind === 'call') {
+  if (t.kind === 'call' || t.kind === 'fax' || t.kind === 'camera' || t.kind === 'inventory') {
     t.options.forEach((o, i) => {
       const btn = el('button', 'btn', o.t);
       btn.addEventListener('click', () => {
@@ -749,7 +803,7 @@ function buildTaskAction(body, t) {
       });
       body.appendChild(btn);
     });
-  } else if (t.kind === 'coffee') {
+  } else if (t.kind === 'coffee' || t.kind === 'boss') {
     if (!G.coffee[t.id]) G.coffee[t.id] = { sugar: 0, milk: 0 };
     const c = G.coffee[t.id];
     const send = () => {
@@ -849,6 +903,8 @@ function renderRulebook(rules) {
     'Кофе для шефа: <b>' + rules.coffee.sugar + ' ' + plural(rules.coffee.sugar, 'кубик', 'кубика', 'кубиков') +
       ' сахара, ' + (rules.coffee.milk === 0 ? 'без молока' : rules.coffee.milk + ' ' + plural(rules.coffee.milk, 'порция', 'порции', 'порций') + ' молока') + '</b>.',
     'Пробки выключает рубильник <b>«' + rules.fuse + '»</b>. Остальные — не трогать.',
+    'Камера: пропуска серии <b>«' + rules.badSeries + '»</b> недействительны.',
+    'Факс: шифр — сдвиг букв на <b>' + rules.faxShift + '</b>.',
     'Дверь: до <b>' + fmtTime(rules.curfew) + '</b> открывать только тем, кто называет слово <b>«' + rules.word + '»</b>. После — не открывать никому.',
     'Посылки до утра не вскрывать.',
     'Жалобы соседей: шум — не наша вина, предлагать наушники.',
@@ -970,15 +1026,20 @@ const SHIFT_CHOICES = [300000, 420000, 600000];
 const DIFF_CHOICES = [0.7, 1, 1.5];
 
 function loadSettings() {
-  const def = { sound: true, shiftMs: 420000, diff: 1 };
+  const def = { sound: true, shiftMs: 420000, diff: 1, nyTheme: false };
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
     return {
       sound: s.sound !== false,
       shiftMs: SHIFT_CHOICES.includes(s.shiftMs) ? s.shiftMs : def.shiftMs,
       diff: DIFF_CHOICES.includes(s.diff) ? s.diff : def.diff,
+      nyTheme: s.nyTheme === true,
     };
   } catch (e) { return def; }
+}
+
+function applyTheme() {
+  document.body.classList.toggle('ny', !!(G.settings && G.settings.nyTheme));
 }
 
 function bindSeg(id, key, numeric) {
@@ -994,6 +1055,7 @@ function bindSeg(id, key, numeric) {
       G.settings[key] = numeric ? Number(b.dataset.v) : (b.dataset.v === 'true');
       try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(G.settings)); } catch (e) {}
       mark();
+      applyTheme();
     });
   });
   mark();
@@ -1047,7 +1109,12 @@ function renderEndStats() {
   const target = $('#end-stats');
   if (!target) return;
   const s = G.profile.stats;
-  target.textContent = 'Всего смен: ' + s.games + ' · побед: ' + s.wins + ' · личный рекорд: ' + s.best;
+  let html = 'Всего смен: ' + s.games + ' · побед: ' + s.wins + ' · личный рекорд: ' + s.best;
+  const top = (G.profile.history || []).slice(0, 5);
+  if (top.length) {
+    html += '<br>Лучшие смены: ' + top.map((h, i) => (i + 1) + '. ' + h.name + ' — ' + h.score).join(' · ');
+  }
+  target.innerHTML = html;
 }
 
 function recordStats(s) {
@@ -1061,6 +1128,9 @@ function recordStats(s) {
   st.games++;
   if (r.win) st.wins++;
   if (score > st.best) st.best = score;
+  G.profile.history = (G.profile.history || [])
+    .concat([{ name: G.profile.name, score, win: !!r.win, date: new Date().toISOString().slice(0, 10) }])
+    .sort((a, b) => b.score - a.score).slice(0, 5);
   saveProfile();
   renderProfileLine();
   renderEndStats();
@@ -1089,6 +1159,12 @@ function init() {
   bindSeg('#seg-sound', 'sound', false);
   bindSeg('#seg-shift', 'shiftMs', true);
   bindSeg('#seg-diff', 'diff', true);
+  bindSeg('#seg-ny', 'nyTheme', false);
+  applyTheme();
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
 
   $('#btn-solo').addEventListener('click', () => {
     G.mode = 'solo';
@@ -1151,3 +1227,37 @@ function init() {
 }
 
 init();
+
+/* ================= Снег (новогодняя тема) ================= */
+(function () {
+  const cv = document.getElementById('snow');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  let flakes = [];
+  function resize() { cv.width = innerWidth; cv.height = innerHeight; }
+  addEventListener('resize', resize);
+  resize();
+  flakes = Array.from({ length: 90 }, () => ({
+    x: Math.random() * cv.width, y: Math.random() * cv.height,
+    r: 1 + Math.random() * 2.6, s: 0.4 + Math.random() * 1.1,
+    ph: Math.random() * Math.PI * 2,
+  }));
+  function frame() {
+    if (G.settings && G.settings.nyTheme) {
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      flakes.forEach((f) => {
+        f.y += f.s;
+        f.x += Math.sin(f.y / 40 + f.ph) * 0.6;
+        if (f.y > cv.height + 4) { f.y = -4; f.x = Math.random() * cv.width; }
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, f.r, 0, 6.284);
+        ctx.fill();
+      });
+    } else {
+      ctx.clearRect(0, 0, cv.width, cv.height);
+    }
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
