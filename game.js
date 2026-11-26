@@ -18,7 +18,11 @@ const fmtTime = (min) => {
 };
 
 /* ================= Константы ================= */
-const PEER_PREFIX = 'smen-shift-v1-';
+const MQTT_BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://test.mosquitto.org:8081/mqtt'];
+const TOPIC_BASE = 'smenschik-v2/';
+const topicState = (c) => TOPIC_BASE + c + '/state';
+const topicToHost = (c) => TOPIC_BASE + c + '/tohost';
+const topicGone = (c) => TOPIC_BASE + c + '/gone';
 const SHIFT_REAL_MS = 7 * 60 * 1000;      // реальная длительность смены
 const SHIFT_GAME_MIN = 480;               // 00:00 -> 08:00
 const TASK_TTL = { call: 35000, fuse: 25000, coffee: 30000, knock: 20000 };
@@ -140,15 +144,15 @@ function fill(text, rules) {
 /* ================= Глобальное состояние ================= */
 const G = {
   mode: null,        // 'solo' | 'host' | 'client'
-  peer: null,
-  conns: [],         // соединения клиентов (у хоста)
-  hostConn: null,    // соединение с хостом (у клиента)
+  mqtt: null,        // клиент MQTT
+  myId: 'host',
   code: '',
   state: null,       // авторитетное (хост/соло) или зеркало (клиент)
   coffee: {},        // локальные счётчики кофе по task.id
   taskSig: '',
   seenTasks: new Set(),
   joinTimer: null,
+  pingTimer: null,
 };
 
 /* ================= Звук ================= */
@@ -176,8 +180,16 @@ function setStatus(text) { $('#menu-status').textContent = text; }
 
 function toMenu(message) {
   if (G.joinTimer) { clearTimeout(G.joinTimer); G.joinTimer = null; }
-  if (G.peer) { try { G.peer.destroy(); } catch (e) {} }
-  G.mode = null; G.peer = null; G.conns = []; G.hostConn = null;
+  if (G.pingTimer) { clearInterval(G.pingTimer); G.pingTimer = null; }
+  if (G.mqtt) {
+    try {
+      if (G.mode === 'host' && G.code && G.mqtt.connected) {
+        G.mqtt.publish(topicState(G.code), '', { retain: true });
+      }
+      G.mqtt.end(true);
+    } catch (e) {}
+  }
+  G.mode = null; G.mqtt = null; G.myId = 'host'; G.code = '';
   G.state = null; G.taskSig = ''; G.seenTasks = new Set(); G.coffee = {};
   G.ruleShown = false;
   showScreen('menu');
@@ -210,8 +222,8 @@ function hostNewState() {
 function hostAddPlayer(id, name) {
   const st = G.state;
   let p = st.players.find((x) => x.id === id);
-  if (!p) { p = { id, name, score: 0 }; st.players.push(p); }
-  else p.name = name;
+  if (!p) { p = { id, name, score: 0, lastSeen: Date.now() }; st.players.push(p); }
+  else { p.name = name; p.lastSeen = Date.now(); }
   return p;
 }
 
@@ -247,8 +259,9 @@ function publicState() {
 
 function broadcast() {
   const s = publicState();
-  const payload = { t: 'state', s };
-  G.conns.forEach((c) => { if (c.open) { try { c.send(payload); } catch (e) {} } });
+  if (G.mode === 'host' && G.mqtt && G.mqtt.connected) {
+    try { G.mqtt.publish(topicState(G.code), JSON.stringify(s), { retain: true }); } catch (e) {}
+  }
   applyState(s);
 }
 
@@ -337,6 +350,11 @@ function hostAct(taskId, pid, data) {
 
 function hostTick() {
   const st = G.state;
+  // отвалившиеся игроки (без пинга дольше 45 c) выпадают из лобби
+  if (st) {
+    const now = Date.now();
+    st.players = st.players.filter((p) => p.id === 'host' || (now - (p.lastSeen || 0) < 45000));
+  }
   if (!st || st.phase !== 'playing') return;
   const el = Date.now() - st.startedAt;
   st.elapsed = el;
@@ -397,96 +415,132 @@ function hostAgain() {
   broadcast();
 }
 
-/* ================= Хост: сеть ================= */
-function hostCreate() {
-  const name = playerName();
-  let attempts = 0;
-  tryCreate();
+/* ================= Сеть: MQTT ================= */
+function netConnect(code, isHost, onReady) {
+  let attempt = 0;
 
-  function tryCreate() {
-    attempts++;
-    const code = makeCode();
-    setStatus('Создаём лобби…');
-    const peer = new Peer(PEER_PREFIX + code);
-    G.peer = peer; G.code = code;
-
-    peer.on('open', () => {
-      G.mode = 'host';
-      G.state = hostNewState();
-      G.state.nextId = 1;
-      hostAddPlayer('host', name);
-      showScreen('lobby');
-      renderLobby();
+  function tryNext() {
+    if (attempt >= MQTT_BROKERS.length) { toMenu('Сервер связи недоступен. Попробуйте позже.'); return; }
+    const url = MQTT_BROKERS[attempt++];
+    const will = isHost ? undefined : { topic: topicGone(code), payload: G.myId, qos: 0, retain: false };
+    const client = mqtt.connect(url, {
+      clientId: 'smen-' + Math.random().toString(36).slice(2, 10),
+      clean: true,
+      connectTimeout: 8000,
+      reconnectPeriod: 3000,
+      will,
     });
+    G.mqtt = client;
+    let ready = false;
 
-    peer.on('connection', (conn) => {
-      G.conns.push(conn);
-      conn.on('data', (msg) => hostHandle(conn, msg));
-      conn.on('close', () => {
-        G.conns = G.conns.filter((c) => c !== conn);
-        if (G.state) {
-          G.state.players = G.state.players.filter((p) => p.id !== conn.peer);
-          if (G.state.phase === 'lobby') renderLobby();
-          broadcast();
+    client.on('connect', () => {
+      if (G.mqtt !== client) return;
+      const subs = isHost ? [topicToHost(code), topicGone(code)] : [topicState(code)];
+      client.subscribe(subs, (err) => {
+        if (err || G.mqtt !== client) return;
+        if (!isHost) {
+          client.publish(topicToHost(code), JSON.stringify({ t: 'join', id: G.myId, name: playerName() }));
         }
+        if (!ready) { ready = true; onReady(); }
+        else if (isHost) broadcast(); // переподключились — обновляем retained-состояние
       });
     });
 
-    peer.on('error', (e) => {
-      if (e.type === 'unavailable-id' && attempts < 5) {
-        try { peer.destroy(); } catch (err) {}
-        tryCreate();
-      } else if (e.type !== 'unavailable-id') {
-        toMenu('Ошибка связи: ' + e.type);
-      }
+    client.on('message', (topic, payload) => {
+      try { netOnMessage(topic, JSON.parse(payload.toString())); } catch (e) {}
     });
+    client.on('close', () => { if (!ready) tryNext(); });
+    client.on('error', () => {});
+  }
+
+  tryNext();
+}
+
+function netOnMessage(topic, msg) {
+  if (G.mode === 'host') {
+    if (topic === topicToHost(G.code)) hostHandle(msg);
+    else if (topic === topicGone(G.code)) hostGone(msg);
+  } else if (G.mode === 'client') {
+    if (topic === topicState(G.code) && msg && typeof msg === 'object') {
+      if (G.joinTimer) { clearTimeout(G.joinTimer); G.joinTimer = null; }
+      G.state = msg;
+      applyState(msg);
+    }
   }
 }
 
-function hostHandle(conn, msg) {
-  if (!msg || typeof msg !== 'object') return;
+function netPublish(topic, obj) {
+  if (G.mqtt && G.mqtt.connected) {
+    try { G.mqtt.publish(topic, JSON.stringify(obj)); } catch (e) {}
+  }
+}
+
+/* ================= Хост: сеть ================= */
+function hostCreate() {
+  G.mode = 'host';
+  G.myId = 'host';
+  G.code = makeCode();
+  G.state = hostNewState();
+  G.state.nextId = 1;
+  hostAddPlayer('host', playerName());
+  setStatus('Создаём лобби…');
+
+  netConnect(G.code, true, () => {
+    showScreen('lobby');
+    renderLobby();
+    broadcast();
+  });
+}
+
+function hostHandle(msg) {
+  if (!msg || typeof msg !== 'object' || typeof msg.id !== 'string') return;
+  const st = G.state;
+  const p = st.players.find((x) => x.id === msg.id);
+  if (p) p.lastSeen = Date.now();
+
   if (msg.t === 'join') {
     const name = String(msg.name || 'Безымянный').slice(0, 14);
-    hostAddPlayer(conn.peer, name);
-    if (G.state.phase === 'lobby') renderLobby();
+    hostAddPlayer(msg.id, name);
+    if (st.phase === 'lobby') renderLobby();
     broadcast();
   } else if (msg.t === 'claim') {
-    hostClaim(msg.taskId, conn.peer);
+    hostClaim(msg.taskId, msg.id);
   } else if (msg.t === 'act') {
-    hostAct(msg.taskId, conn.peer, msg.data || {});
+    hostAct(msg.taskId, msg.id, msg.data || {});
+  }
+}
+
+function hostGone(msg) {
+  const id = typeof msg === 'string' ? msg : (msg && msg.id);
+  if (typeof id !== 'string' || id === 'host') return;
+  const st = G.state;
+  const before = st.players.length;
+  st.players = st.players.filter((p) => p.id !== id);
+  if (st.players.length !== before) {
+    if (st.phase === 'lobby') renderLobby();
+    broadcast();
   }
 }
 
 /* ================= Клиент: сеть ================= */
 function clientJoin(code) {
-  const name = playerName();
+  G.mode = 'client';
+  G.code = code;
+  G.myId = 'p-' + Math.random().toString(36).slice(2, 10);
   setStatus('Подключаемся…');
-  const peer = new Peer();
-  G.peer = peer;
-
-  peer.on('open', () => {
-    const conn = peer.connect(PEER_PREFIX + code, { reliable: true });
-    G.hostConn = conn;
-    conn.on('open', () => {
-      conn.send({ t: 'join', name });
-      G.joinTimer = setTimeout(() => {
-        if (!G.state) toMenu('Хост не отвечает. Попробуйте ещё раз.');
-      }, 8000);
-    });
-    conn.on('data', (m) => {
-      if (m && m.t === 'state') { G.state = m.s; applyState(m.s); }
-    });
-    conn.on('close', () => toMenu('Соединение с лобби потеряно.'));
-  });
-
-  peer.on('error', (e) => {
-    if (e.type === 'peer-unavailable') toMenu('Лобби не найдено. Проверьте код.');
-    else toMenu('Ошибка связи: ' + e.type);
+  netConnect(code, false, () => {
+    showScreen('lobby');
+    setStatus('');
+    G.joinTimer = setTimeout(() => {
+      if (!G.state) toMenu('Лобби не найдено или хост не отвечает.');
+    }, 8000);
+    G.pingTimer = setInterval(() => clientSend({ t: 'ping', id: G.myId }), 15000);
   });
 }
 
 function clientSend(msg) {
-  if (G.hostConn && G.hostConn.open) G.hostConn.send(msg);
+  msg.id = G.myId;
+  netPublish(topicToHost(G.code), msg);
 }
 
 /* ================= Применение состояния (у всех) ================= */
@@ -566,8 +620,7 @@ function renderGame(st) {
 
 function myId() {
   if (G.mode === 'host' || G.mode === 'solo') return 'host';
-  if (G.mode === 'client') return G.peer ? G.peer.id : '';
-  return '';
+  return G.mode === 'client' ? G.myId : '';
 }
 
 function playerNameOf(st, id) {
