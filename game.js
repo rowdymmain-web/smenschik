@@ -349,6 +349,8 @@ function hostAct(taskId, pid, data) {
 }
 
 function hostTick() {
+  // таймер смены — только у хоста/соло; у клиента состояние лишь зеркало
+  if (G.mode !== 'host' && G.mode !== 'solo') return;
   const st = G.state;
   // отвалившиеся игроки (без пинга дольше 45 c) выпадают из лобби
   if (st) {
