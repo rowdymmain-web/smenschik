@@ -1061,6 +1061,46 @@ function bindSeg(id, key, numeric) {
   mark();
 }
 
+/* ================= Дневник: главы за победы ================= */
+const STORY = [
+  { at: 1, title: 'Глава 1. Записка в ящике', text: '«Мой сменщик, если ты это читаешь — значит, я не вернулся со смены. Не верь конторе: приказ каждую ночь новый не потому, что правила меняются. Меняются мы.»' },
+  { at: 2, title: 'Глава 2. Тихий голос', text: '«Звонящий с вопросом «вы один?» звонил и мне. Я ответил — один раз. После этого тени в коридоре стали знать моё имя.»' },
+  { at: 3, title: 'Глава 3. Ромашка звонит в 04:10', text: '«Они говорят — срочная отгрузка. Но склад закрыт не от воров. В ящиках серии А7 лежат вещи, которые не должны увидеть утро.»' },
+  { at: 4, title: 'Глава 4. Свет в серверной', text: '«Рубильник А — не свет серверной. Это свет комнаты, которой нет на плане этажа. Я заглядывал один раз. Там сидел сменщик. Он был похож на меня.»' },
+  { at: 5, title: 'Глава 5. Посылка', text: '«Не вскрывай до утра — единственный приказ, который контора соблюдает строго. Утром посылки забирают те, кто подписывает смену кровью в журнале вахтёра.»' },
+  { at: 6, title: 'Глава 6. Кофе', text: '«Шеф никогда не пьёт кофе. Он просто хочет знать, что ты отлучился от поста на две минуты. Двух минут ему хватает.»' },
+  { at: 7, title: 'Глава 7. Кодовое слово', text: '«Я назвал слово Анониму в трубку — один раз, в слабости. После этого дверь стучала каждую ночь. Даже когда за ней никого не было.»' },
+  { at: 8, title: 'Глава 8. Восемь утра', text: '«Ты дожил до 08:00 — снова и снова. А теперь посмотри в тёмный монитор: сколько смен ты уже отстоял? Мы оба знаем, что приказ каждый раз новый не случайно.»' },
+];
+
+function openDiary(idx) {
+  const wins = G.profile.stats.wins;
+  const read = new Set(G.profile.read || []);
+  if (idx === null) {
+    STORY.forEach((s) => { if (wins >= s.at) read.add(s.at); });
+  } else {
+    read.add(idx);
+  }
+  G.profile.read = Array.from(read);
+  saveProfile();
+
+  $('#rulebook-title').textContent = 'Дневник сменщика';
+  const ol = $('#rulebook-list');
+  ol.innerHTML = '';
+  const items = (idx !== null) ? [STORY.find((s) => s.at === idx)] : STORY;
+  items.forEach((s) => {
+    const li = el('li', null, null);
+    if (wins >= s.at) {
+      li.innerHTML = '<b>' + s.title + '</b><p class="diary-text">' + s.text + '</p>';
+    } else {
+      li.className = 'diary-locked';
+      li.innerHTML = '<b>' + s.title + '</b> — откроется после ' + s.at + '-й победы.';
+    }
+    ol.appendChild(li);
+  });
+  $('#modal').classList.remove('hidden');
+}
+
 /* ================= Профиль (только на устройстве, без БД) ================= */
 const PROFILE_KEY = 'smen-profile-v1';
 
@@ -1134,6 +1174,13 @@ function recordStats(s) {
   saveProfile();
   renderProfileLine();
   renderEndStats();
+
+  if (r.win) {
+    const ch = STORY.find((s) => s.at === G.profile.stats.wins);
+    if (ch && !(G.profile.read || []).includes(ch.at)) {
+      setTimeout(() => openDiary(ch.at), 700);
+    }
+  }
 }
 
 /* ================= Инициализация ================= */
@@ -1213,6 +1260,7 @@ function init() {
   });
   $('#btn-end-menu').addEventListener('click', () => toMenu(''));
 
+  $('#btn-diary').addEventListener('click', () => openDiary(null));
   $('#btn-rulebook').addEventListener('click', () => openRulebook());
   $('#btn-close-modal').addEventListener('click', () => $('#modal').classList.add('hidden'));
   $('#modal').addEventListener('click', (e) => {

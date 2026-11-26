@@ -163,6 +163,8 @@ input:focus { border-color: var(--amber-dim); }
 .modal-card ol { margin: 0 0 16px 20px; }
 .modal-card li { margin-bottom: 8px; font-size: 15px; }
 .modal-card b { color: var(--amber); }
+.diary-text { font-style: italic; color: var(--muted); margin-top: 4px; }
+.modal-card li.diary-locked { color: var(--muted); opacity: .6; }
 
 /* ---------- чат ---------- */
 .chat { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 4px; }

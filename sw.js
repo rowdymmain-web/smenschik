@@ -1,4 +1,4 @@
-const CACHE = 'smen-v1';
+const CACHE = 'smen-v2';
 const ASSETS = ['./', 'index.html', 'style.css', 'game.js', 'vendor/mqtt.min.js', 'manifest.json', 'icon.svg'];
 
 self.addEventListener('install', (e) => {
